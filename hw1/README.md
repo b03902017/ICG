@@ -1,0 +1,1 @@
+implement flat, gouraud, and phong shading simultaneously on WebGl
