@@ -4,7 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #define SEP_NUM 1 //will split src_img into n*n rectangles
-#define VERSION 1
+#define VERSION 2
 
 using namespace cv;
 using namespace std;
@@ -100,6 +100,17 @@ Mat* split_mat(Mat &src)
 	return mats;
 }
 
+void get_index(int &index, int x, int y, Mat &mat)
+{
+	int Y = (y / (mat.rows/SEP_NUM) ) * SEP_NUM;
+	if(Y > SEP_NUM * (SEP_NUM-1) )
+		Y = SEP_NUM * (SEP_NUM-1);
+	int X = x / (mat.cols/SEP_NUM);
+	if(X >= SEP_NUM)
+		X = SEP_NUM - 1;
+	index = Y + X;
+}
+
 void scale(Mat &mat)
 {
 	if(mat.rows > 600) {
@@ -110,6 +121,13 @@ void scale(Mat &mat)
 		double ratio = 800 / (double)mat.cols;
 		resize(mat, mat, Size(), ratio, ratio, CV_INTER_AREA);
 	}
+}
+
+double distance(int x, int y, Point &center)
+{
+	double dis = sqrt(pow(center.x - x, 2) + pow(center.y - y, 2) );
+	if(dis < 1) dis = 1;
+	return dis;
 }
 int main(int argc, char** argv)
 {
@@ -134,20 +152,22 @@ int main(int argc, char** argv)
 	vector<LabData> mean_src;
 	vector<LabData> sigma_src;
 	LabData mean_tar, sigma_tar;
-	//cout << "src_lab.rows:" << src_lab.rows << "src_lab.cols" << src_lab.cols << endl;
-	//cout << "depth:" << src.depth() << endl << "cha:" << src.channels() << endl;
 	
 	Mat *src_labs = split_mat(src_lab);
+	Point center[SEP_NUM*SEP_NUM];
+	int width = src_lab.cols/2, height = src_lab.rows/2;
 	for(int i = 0; i < SEP_NUM*SEP_NUM; i++) {
 		mean_src.push_back(LabData());
 		sigma_src.push_back(LabData());
 		get_means(src_labs[i], mean_src.at(i));
 		get_sigma(src_labs[i], mean_src.at(i), sigma_src.at(i));
+		center[i] = Point( (int)(i%SEP_NUM+0.5)*width, (int)(i/SEP_NUM+0.5)*height);
 	}
 	
 	LabData all_mean_src, all_sigma_src;
 	get_means(src_lab, all_mean_src);
 	get_sigma(src_lab, all_mean_src, all_sigma_src);
+	printf("all_mean_src: %lf, %lf, %lf\n", all_mean_src.l, all_mean_src.a, all_mean_src.b);
 	printf("all_sigma_src: %lf, %lf, %lf\n", all_sigma_src.l, all_sigma_src.a, all_sigma_src.b);
 	
 	get_means(tar_lab, mean_tar);
@@ -167,26 +187,25 @@ int main(int argc, char** argv)
 	for(int y = 0; y < src_lab.rows; y++) {
 		for(int x = 0; x < src_lab.cols; x++) {
 			Vec3b color_src = src_lab.at<Vec3b>(Point(x, y));
-			int Y = (y / (src_lab.rows/SEP_NUM) ) * SEP_NUM;
-			if(Y > SEP_NUM * (SEP_NUM-1) )
-				Y = SEP_NUM * (SEP_NUM-1);
-			int X = x / (src_lab.cols/SEP_NUM);
-			if(X >= SEP_NUM)
-				X = SEP_NUM - 1;
-			int index = Y + X;
+			int index;
+			get_index(index, x, y, src_lab);
 			for(int i = 0; i < 3; i++) {
 				double ratio = sigma_tar.get(i)/all_sigma_src.get(i);
-				if(ratio > 7) ratio = 7;
-				double val = ((double)color_src.val[i]-mean_src.at(index).get(i)) * ratio + mean_tar.get(i);
-				if(val > 255 || val < 0)
-					continue;
+				double val_old = (color_src.val[i]-all_mean_src.get(i)) * ratio + mean_tar.get(i);
+				double val_new = (color_src.val[i]-mean_src.at(index).get(i)) * ratio + mean_tar.get(i);
+				double dis_weight = 1 / sqrt(distance(x, y, center[index]));
+				double val = val_new * dis_weight + val_old * (1 - dis_weight);
+				if(val > 255)
+					val = 255;
+				else if(val < 0)
+					val = 0;
 				else if(abs(color_src.val[i] - val) > abs(color_src.val[i]-mean_tar.get(i))*3 
 						) {
-					color_src.val[i] = val * 0.7 + (double)color_src.val[i] * 0.3;
+					color_src.val[i] = val * 0.7 + color_src.val[i] * 0.3;
 					counter[i]++;
 				}
 				else
-					color_src.val[i] = val * 0.9 + (double)color_src.val[i] * 0.1;
+					color_src.val[i] = val;
 			}
 			src_lab.at<Vec3b>(Point(x, y)) = color_src;
 		}
@@ -196,13 +215,16 @@ int main(int argc, char** argv)
 	printf("\n");
 	Mat res;
 	cvtColor(src_lab, res, CV_Lab2BGR);
-	scale(src);
+	/*scale(src);
 	scale(tar);
-	scale(res);
+	scale(res);*/
 	stringstream ss;
 	ss << "img/res_" << VERSION << "." << SEP_NUM << ".jpg";
 	string name = ss.str();
-	imwrite(name, res);
+	//imwrite(name, res);
+	scale(src);
+	scale(tar);
+	scale(res);
 	namedWindow("src", WINDOW_AUTOSIZE );
 	imshow("src", src);
 	namedWindow("tar", WINDOW_AUTOSIZE );
